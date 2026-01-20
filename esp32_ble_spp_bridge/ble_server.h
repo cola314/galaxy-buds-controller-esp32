@@ -70,43 +70,53 @@ class CommandCallbacks: public BLECharacteristicCallbacks {
     }
 };
 
+// 보류 중인 노이즈 컨트롤 명령
+struct PendingCommand {
+    bool has_command;
+    uint8_t data[2];
+    int len;
+};
+extern PendingCommand pending_noise_cmd;
+
 class NoiseControlCallbacks: public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic *pCharacteristic) {
         uint8_t* pData = pCharacteristic->getData();
         size_t len = pCharacteristic->getValue().length();
         if (len > 0) {
-            uint8_t mode = pData[0];
+            // 명령 저장
+            pending_noise_cmd.has_command = true;
+            pending_noise_cmd.len = len;
+            memcpy(pending_noise_cmd.data, pData, len);
 
             // Buds 연결되어 있지 않으면 연결 요청
             if (!spp_connected) {
                 Serial.println("[BLE] Noise control requested, connecting to Buds...");
                 connect_requested = true;
-                delay(2000);  // 연결 대기
-            }
+            } else {
+                // 이미 연결되어 있으면 바로 전송
+                uint8_t mode = pData[0];
 
-            if (!spp_connected) {
-                Serial.println("[BLE] Buds not connected, command failed");
-                return;
-            }
+                // 레벨 조정인지 확인 (2바이트)
+                if (len == 2) {
+                    uint8_t msgId = mode;  // 0x83 or 0x84
+                    uint8_t level = pData[1];
 
-            // 레벨 조정인지 확인 (2바이트)
-            if (len == 2) {
-                uint8_t msgId = mode;  // 0x83 or 0x84
-                uint8_t level = pData[1];
+                    uint8_t pkt[16];
+                    uint8_t payload[] = {level};
+                    int pktLen = createPacket(pkt, msgId, payload, 1);
+                    esp_spp_write(spp_handle, pktLen, pkt);
+                    Serial.printf("[BLE->SPP] Set Level: msgId=0x%02X, level=%d\n", msgId, level);
+                }
+                // 노이즈 모드 변경
+                else {
+                    uint8_t pkt[16];
+                    uint8_t payload[] = {mode};
+                    int pktLen = createPacket(pkt, MSG_NOISE_CONTROL, payload, 1);
+                    esp_spp_write(spp_handle, pktLen, pkt);
+                    Serial.printf("[BLE->SPP] Noise Control: %d\n", mode);
+                }
 
-                uint8_t pkt[16];
-                uint8_t payload[] = {level};
-                int pktLen = createPacket(pkt, msgId, payload, 1);
-                esp_spp_write(spp_handle, pktLen, pkt);
-                Serial.printf("[BLE->SPP] Set Level: msgId=0x%02X, level=%d\n", msgId, level);
-            }
-            // 노이즈 모드 변경
-            else {
-                uint8_t pkt[16];
-                uint8_t payload[] = {mode};
-                int pktLen = createPacket(pkt, MSG_NOISE_CONTROL, payload, 1);
-                esp_spp_write(spp_handle, pktLen, pkt);
-                Serial.printf("[BLE->SPP] Noise Control: %d\n", mode);
+                pending_noise_cmd.has_command = false;
             }
         }
     }

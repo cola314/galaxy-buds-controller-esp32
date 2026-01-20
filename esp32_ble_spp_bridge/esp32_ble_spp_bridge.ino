@@ -37,6 +37,16 @@ bool ble_device_connected = false;
 volatile bool connect_requested = false;
 volatile bool disconnect_after_status = false;
 volatile bool connection_test_requested = false;
+unsigned long status_received_time = 0;
+bool waiting_for_disconnect = false;
+
+// 보류 중인 노이즈 컨트롤 명령
+struct PendingCommand {
+    bool has_command;
+    uint8_t data[2];
+    int len;
+};
+PendingCommand pending_noise_cmd = {false, {0}, 0};
 
 // ========== 패킷 파싱 ==========
 void parsePacket(uint8_t *data, int len) {
@@ -82,6 +92,12 @@ void parsePacket(uint8_t *data, int len) {
                 pStatusCharacteristic->setValue(statusData, 3);
                 pStatusCharacteristic->notify();
             }
+
+            // 연결 테스트였으면 disconnect 대기
+            if (connection_test_requested) {
+                status_received_time = millis();
+                waiting_for_disconnect = true;
+            }
         }
         else if (msgId == MSG_ACK && payloadLen >= 2) {
             if (payload[0] == MSG_NOISE_CONTROL) {
@@ -98,6 +114,12 @@ void parsePacket(uint8_t *data, int len) {
                     pStatusCharacteristic->setValue(statusData, 3);
                     pStatusCharacteristic->notify();
                 }
+
+                // ACK 받으면 disconnect 대기
+                if (!connection_test_requested) {
+                    waiting_for_disconnect = true;
+                    status_received_time = millis();
+                }
             }
             else if (payload[0] == MSG_ANC_LEVEL) {
                 anc_level = payload[1];
@@ -113,6 +135,12 @@ void parsePacket(uint8_t *data, int len) {
                     pStatusCharacteristic->setValue(statusData, 3);
                     pStatusCharacteristic->notify();
                 }
+
+                // ACK 받으면 disconnect 대기
+                if (!connection_test_requested) {
+                    waiting_for_disconnect = true;
+                    status_received_time = millis();
+                }
             }
             else if (payload[0] == MSG_AMBIENT_LEVEL) {
                 ambient_level = payload[1];
@@ -127,6 +155,12 @@ void parsePacket(uint8_t *data, int len) {
                     };
                     pStatusCharacteristic->setValue(statusData, 3);
                     pStatusCharacteristic->notify();
+                }
+
+                // ACK 받으면 disconnect 대기
+                if (!connection_test_requested) {
+                    waiting_for_disconnect = true;
+                    status_received_time = millis();
                 }
             }
         }
@@ -168,11 +202,44 @@ void spp_callback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param) {
                 spp_connected = true;
                 Serial.println("[SPP] Connected to Buds!");
 
-                // Extended Status 요청 (배터리 등 상세 정보)
-                uint8_t pkt[16];
-                int len = createPacket(pkt, MSG_EXTENDED_STATUS, nullptr, 0);
-                esp_spp_write(spp_handle, len, pkt);
-                Serial.println("[SPP] Request Extended Status");
+                // 보류 중인 노이즈 컨트롤 명령이 있으면 전송
+                if (pending_noise_cmd.has_command) {
+                    uint8_t mode = pending_noise_cmd.data[0];
+
+                    // 레벨 조정인지 확인 (2바이트)
+                    if (pending_noise_cmd.len == 2) {
+                        uint8_t msgId = mode;  // 0x83 or 0x84
+                        uint8_t level = pending_noise_cmd.data[1];
+
+                        uint8_t pkt[16];
+                        uint8_t payload[] = {level};
+                        int pktLen = createPacket(pkt, msgId, payload, 1);
+                        esp_spp_write(spp_handle, pktLen, pkt);
+                        Serial.printf("[SPP] Send pending Level: msgId=0x%02X, level=%d\n", msgId, level);
+                    }
+                    // 노이즈 모드 변경
+                    else {
+                        uint8_t pkt[16];
+                        uint8_t payload[] = {mode};
+                        int pktLen = createPacket(pkt, MSG_NOISE_CONTROL, payload, 1);
+                        esp_spp_write(spp_handle, pktLen, pkt);
+                        Serial.printf("[SPP] Send pending Noise Control: %d\n", mode);
+                    }
+
+                    pending_noise_cmd.has_command = false;
+
+                    // 노이즈 컨트롤 명령 후 잠깐 대기하고 끊기
+                    waiting_for_disconnect = true;
+                    status_received_time = millis();
+                }
+
+                // Extended Status 요청 (배터리 등 상세 정보) - 연결 테스트일 때만
+                if (connection_test_requested) {
+                    uint8_t pkt[16];
+                    int len = createPacket(pkt, MSG_EXTENDED_STATUS, nullptr, 0);
+                    esp_spp_write(spp_handle, len, pkt);
+                    Serial.println("[SPP] Request Extended Status");
+                }
 
                 // 연결 테스트였으면 성공 알림
                 if (connection_test_requested && ble_device_connected && pCommandCharacteristic) {
@@ -191,6 +258,9 @@ void spp_callback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param) {
                     pCommandCharacteristic->notify();
                     connection_test_requested = false;
                 }
+
+                // 보류 중인 명령 클리어
+                pending_noise_cmd.has_command = false;
             }
             break;
 
@@ -279,6 +349,8 @@ void setup() {
 }
 
 void loop() {
+    unsigned long now = millis();
+
     // 연결 요청 처리
     if (connect_requested && !spp_connected) {
         connect_requested = false;
@@ -286,11 +358,17 @@ void loop() {
         esp_spp_start_discovery(BUDS_MAC);
     }
 
-    // 주기적으로 Extended Status 요청 (10초마다)
-    static unsigned long lastStatusRequest = 0;
-    unsigned long now = millis();
+    // 연결 테스트 후 자동 disconnect (상태 받고 500ms 후)
+    if (waiting_for_disconnect && spp_connected && (now - status_received_time > 500)) {
+        waiting_for_disconnect = false;
+        Serial.println("[LOOP] Disconnecting from Buds (test completed)");
+        esp_spp_disconnect(spp_handle);
+    }
 
-    if (spp_connected && (now - lastStatusRequest > 10000)) {
+    // 주기적으로 Extended Status 요청 (10초마다) - 연결 테스트가 아닐 때만
+    static unsigned long lastStatusRequest = 0;
+
+    if (spp_connected && !connection_test_requested && (now - lastStatusRequest > 10000)) {
         uint8_t pkt[16];
         int len = createPacket(pkt, MSG_EXTENDED_STATUS, nullptr, 0);
         esp_spp_write(spp_handle, len, pkt);
