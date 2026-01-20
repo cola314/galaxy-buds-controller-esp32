@@ -364,10 +364,7 @@ void setup() {
     Serial.println("=== Galaxy Buds 3 Pro Bridge ===");
     Serial.println("BLE Server + SPP Client");
 
-    // BLE 초기화
-    initBLE();
-
-    // Bluetooth Classic 초기화
+    // Bluetooth Classic 초기화 (먼저!)
     if (!btStart()) {
         Serial.println("Bluetooth start failed");
         return;
@@ -383,6 +380,8 @@ void setup() {
         return;
     }
 
+    Serial.println("[BT] Bluetooth Classic initialized");
+
     // 콜백 등록
     esp_bt_gap_register_callback(gap_callback);
     esp_spp_register_callback(spp_callback);
@@ -393,6 +392,11 @@ void setup() {
         .enable_l2cap_ertm = false,
     };
     esp_spp_enhanced_init(&spp_cfg);
+
+    Serial.println("[SPP] SPP initialized");
+
+    // BLE 초기화 (나중에!)
+    initBLE();
 
     Serial.println("Ready! Connecting to Galaxy Buds...");
 
