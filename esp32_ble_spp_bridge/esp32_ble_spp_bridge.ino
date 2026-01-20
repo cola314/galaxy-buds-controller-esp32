@@ -3,10 +3,8 @@
 #include "esp_bt_device.h"
 #include "esp_gap_bt_api.h"
 #include "esp_spp_api.h"
-#include <BLEDevice.h>
-#include <BLEServer.h>
-#include <BLEUtils.h>
-#include <BLE2902.h>
+#include "buds_protocol.h"
+#include "ble_server.h"
 
 // ========== Galaxy Buds 3 Pro 설정 ==========
 uint8_t BUDS_MAC[6] = {0x5C, 0xDC, 0x49, 0x0A, 0x20, 0x3B};
@@ -16,40 +14,16 @@ static const uint8_t BUDS_SPP_UUID[16] = {
     0x90, 0xe2, 0x16, 0xbe, 0xf0, 0x65, 0x23, 0xf2
 };
 
-// ========== BLE UUIDs (MAUI 앱과 통신용) ==========
-#define SERVICE_UUID        "12345678-1234-5678-1234-56789abcdef0"
-#define NOISE_CHAR_UUID     "12345678-1234-5678-1234-56789abcdef1"
-#define BATTERY_CHAR_UUID   "12345678-1234-5678-1234-56789abcdef2"
-#define STATUS_CHAR_UUID    "12345678-1234-5678-1234-56789abcdef3"
-#define COMMAND_CHAR_UUID   "12345678-1234-5678-1234-56789abcdef4"
-
-// 명령 코드
-#define CMD_TEST_CONNECTION 0x01  // Buds 연결 테스트
-
-// ========== 프로토콜 상수 ==========
-#define SOM 0xFD
-#define EOM 0xDD
-#define MSG_NOISE_CONTROL 0x78
-#define MSG_EXTENDED_STATUS 0x61
-#define MSG_ACK 0x42
-#define MSG_AMBIENT_LEVEL 0x84
-#define MSG_ANC_LEVEL 0x83
-
-#define NC_OFF 0x00
-#define NC_ANC 0x01
-#define NC_AMBIENT 0x02
-#define NC_ADAPTIVE 0x03
-
 // ========== 상태 변수 ==========
-static uint32_t spp_handle = 0;
-static bool spp_connected = false;
+uint32_t spp_handle = 0;
+bool spp_connected = false;
 
-static int8_t battery_left = -1;
-static int8_t battery_right = -1;
-static int8_t noise_control = -1;
-static int8_t anc_level = -1;
-static int8_t ambient_level = -1;
-static bool wearing = false;
+int8_t battery_left = -1;
+int8_t battery_right = -1;
+int8_t noise_control = -1;
+int8_t anc_level = -1;
+int8_t ambient_level = -1;
+bool wearing = false;
 
 // ========== BLE 변수 ==========
 BLEServer* pServer = nullptr;
@@ -62,72 +36,9 @@ bool ble_device_connected = false;
 // 연결 요청 플래그
 volatile bool connect_requested = false;
 volatile bool disconnect_after_status = false;
+volatile bool connection_test_requested = false;
 
-// ========== CRC16 테이블 ==========
-static const uint16_t CRC_TABLE[256] = {
-    0, 4129, 8258, 12387, 16516, 20645, 24774, 28903,
-    33032, 37161, 41290, 45419, 49548, 53677, 57806, 61935,
-    4657, 528, 12915, 8786, 21173, 17044, 29431, 25302,
-    37689, 33560, 45947, 41818, 54205, 50076, 62463, 58334,
-    9314, 13379, 1056, 5121, 25830, 29895, 17572, 21637,
-    42346, 46411, 34088, 38153, 58862, 62927, 50604, 54669,
-    13907, 9842, 5649, 1584, 30423, 26358, 22165, 18100,
-    46939, 42874, 38681, 34616, 63455, 59390, 55197, 51132,
-    18628, 22757, 26758, 30887, 2112, 6241, 10242, 14371,
-    51660, 55789, 59790, 63919, 35144, 39273, 43274, 47403,
-    23285, 19156, 31415, 27286, 6769, 2640, 14899, 10770,
-    56317, 52188, 64447, 60318, 39801, 35672, 47931, 43802,
-    27814, 31879, 19684, 23749, 11298, 15363, 3168, 7233,
-    60846, 64911, 52716, 56781, 44330, 48395, 36200, 40265,
-    32407, 28342, 24277, 20212, 15891, 11826, 7761, 3696,
-    65439, 61374, 57309, 53244, 48923, 44858, 40793, 36728,
-    37256, 33193, 45514, 41451, 53516, 49453, 61774, 57711,
-    4224, 161, 12482, 8419, 20484, 16421, 28742, 24679,
-    33721, 37784, 41979, 46042, 49981, 54044, 58239, 62302,
-    689, 4752, 8947, 13010, 16949, 21012, 25207, 29270,
-    46570, 42443, 38312, 34185, 62830, 58703, 54572, 50445,
-    13538, 9411, 5280, 1153, 29798, 25671, 21540, 17413,
-    42971, 47098, 34713, 38840, 59231, 63358, 50973, 55100,
-    9939, 14066, 1681, 5808, 26199, 30326, 17941, 22068,
-    55628, 51565, 63758, 59695, 39368, 35305, 47498, 43435,
-    22596, 18533, 30726, 26663, 6336, 2273, 14466, 10403,
-    52093, 56156, 60223, 64286, 35833, 39896, 43963, 48026,
-    19061, 23124, 27191, 31254, 2801, 6864, 10931, 14994,
-    64814, 60687, 56684, 52557, 48554, 44427, 40424, 36297,
-    31782, 27655, 23652, 19525, 15522, 11395, 7392, 3265,
-    61215, 65342, 53085, 57212, 44955, 49082, 36825, 40952,
-    28183, 32310, 20053, 24180, 11923, 16050, 3793, 7920
-};
-
-uint16_t crc16(uint8_t *data, int len) {
-    uint16_t crc = 0;
-    for (int i = 0; i < len; i++) {
-        crc = CRC_TABLE[((crc >> 8) ^ data[i]) & 0xFF] ^ (crc << 8);
-    }
-    return crc;
-}
-
-// ========== 패킷 생성/파싱 ==========
-int createPacket(uint8_t *buf, uint8_t msgId, uint8_t *payload, int payloadLen) {
-    int length = 1 + payloadLen + 2;
-
-    uint8_t crcData[64];
-    crcData[0] = msgId;
-    memcpy(crcData + 1, payload, payloadLen);
-    uint16_t crc = crc16(crcData, 1 + payloadLen);
-
-    buf[0] = SOM;
-    buf[1] = length & 0xFF;
-    buf[2] = (length >> 8) & 0xFF;
-    buf[3] = msgId;
-    memcpy(buf + 4, payload, payloadLen);
-    buf[4 + payloadLen] = crc & 0xFF;
-    buf[5 + payloadLen] = (crc >> 8) & 0xFF;
-    buf[6 + payloadLen] = EOM;
-
-    return 7 + payloadLen;
-}
-
+// ========== 패킷 파싱 ==========
 void parsePacket(uint8_t *data, int len) {
     int i = 0;
     while (i < len) {
@@ -224,79 +135,6 @@ void parsePacket(uint8_t *data, int len) {
     }
 }
 
-// ========== BLE Server Callbacks ==========
-class ServerCallbacks: public BLEServerCallbacks {
-    void onConnect(BLEServer* pServer) {
-        ble_device_connected = true;
-        Serial.println("[BLE] Client connected");
-    }
-
-    void onDisconnect(BLEServer* pServer) {
-        ble_device_connected = false;
-        Serial.println("[BLE] Client disconnected");
-        // 재광고 시작
-        BLEDevice::startAdvertising();
-    }
-};
-
-class CommandCallbacks: public BLECharacteristicCallbacks {
-    void onWrite(BLECharacteristic *pCharacteristic) {
-        uint8_t* pData = pCharacteristic->getData();
-        size_t len = pCharacteristic->getValue().length();
-        if (len > 0) {
-            uint8_t cmd = pData[0];
-            if (cmd == CMD_TEST_CONNECTION) {
-                Serial.println("[BLE] Test connection requested");
-                connect_requested = true;
-                disconnect_after_status = true;
-            }
-        }
-    }
-};
-
-class NoiseControlCallbacks: public BLECharacteristicCallbacks {
-    void onWrite(BLECharacteristic *pCharacteristic) {
-        uint8_t* pData = pCharacteristic->getData();
-        size_t len = pCharacteristic->getValue().length();
-        if (len > 0) {
-            uint8_t mode = pData[0];
-
-            // Buds 연결되어 있지 않으면 연결 요청
-            if (!spp_connected) {
-                Serial.println("[BLE] Noise control requested, connecting to Buds...");
-                connect_requested = true;
-                // 명령을 나중에 실행하기 위해 저장 (여기서는 간단히 처리)
-                delay(2000);  // 연결 대기
-            }
-
-            if (!spp_connected) {
-                Serial.println("[BLE] Buds not connected, command failed");
-                return;
-            }
-
-            // 레벨 조정인지 확인 (2바이트)
-            if (len == 2) {
-                uint8_t msgId = mode;  // 0x83 or 0x84
-                uint8_t level = pData[1];
-
-                uint8_t pkt[16];
-                uint8_t payload[] = {level};
-                int len = createPacket(pkt, msgId, payload, 1);
-                esp_spp_write(spp_handle, len, pkt);
-                Serial.printf("[BLE->SPP] Set Level: msgId=0x%02X, level=%d\n", msgId, level);
-            }
-            // 노이즈 모드 변경
-            else {
-                uint8_t pkt[16];
-                uint8_t payload[] = {mode};
-                int len = createPacket(pkt, MSG_NOISE_CONTROL, payload, 1);
-                esp_spp_write(spp_handle, len, pkt);
-                Serial.printf("[BLE->SPP] Noise Control: %d\n", mode);
-            }
-        }
-    }
-};
-
 // ========== SPP 콜백 ==========
 void spp_callback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param) {
     switch (event) {
@@ -313,6 +151,14 @@ void spp_callback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param) {
                 }
             } else {
                 Serial.println("[SPP] Discovery failed");
+
+                // 연결 테스트였으면 실패 알림
+                if (connection_test_requested && ble_device_connected && pCommandCharacteristic) {
+                    uint8_t result = RESULT_FAILED;
+                    pCommandCharacteristic->setValue(&result, 1);
+                    pCommandCharacteristic->notify();
+                    connection_test_requested = false;
+                }
             }
             break;
 
@@ -327,8 +173,24 @@ void spp_callback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param) {
                 int len = createPacket(pkt, MSG_EXTENDED_STATUS, nullptr, 0);
                 esp_spp_write(spp_handle, len, pkt);
                 Serial.println("[SPP] Request Extended Status");
+
+                // 연결 테스트였으면 성공 알림
+                if (connection_test_requested && ble_device_connected && pCommandCharacteristic) {
+                    uint8_t result = RESULT_SUCCESS;
+                    pCommandCharacteristic->setValue(&result, 1);
+                    pCommandCharacteristic->notify();
+                    connection_test_requested = false;
+                }
             } else {
                 Serial.printf("[SPP] Connection failed: %d\n", param->open.status);
+
+                // 연결 테스트였으면 실패 알림
+                if (connection_test_requested && ble_device_connected && pCommandCharacteristic) {
+                    uint8_t result = RESULT_FAILED;
+                    pCommandCharacteristic->setValue(&result, 1);
+                    pCommandCharacteristic->notify();
+                    connection_test_requested = false;
+                }
             }
             break;
 
@@ -369,49 +231,6 @@ void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param) {
         default:
             break;
     }
-}
-
-// ========== BLE 초기화 ==========
-void initBLE() {
-    BLEDevice::init("ESP32-GalaxyBuds");
-    pServer = BLEDevice::createServer();
-    pServer->setCallbacks(new ServerCallbacks());
-
-    BLEService *pService = pServer->createService(SERVICE_UUID);
-
-    // Noise Control Characteristic (Write)
-    pNoiseCharacteristic = pService->createCharacteristic(
-                            NOISE_CHAR_UUID,
-                            BLECharacteristic::PROPERTY_WRITE
-                          );
-    pNoiseCharacteristic->setCallbacks(new NoiseControlCallbacks());
-
-    // Battery Characteristic (Read + Notify)
-    pBatteryCharacteristic = pService->createCharacteristic(
-                              BATTERY_CHAR_UUID,
-                              BLECharacteristic::PROPERTY_READ |
-                              BLECharacteristic::PROPERTY_NOTIFY
-                            );
-    pBatteryCharacteristic->addDescriptor(new BLE2902());
-
-    // Status Characteristic (Read + Notify)
-    pStatusCharacteristic = pService->createCharacteristic(
-                             STATUS_CHAR_UUID,
-                             BLECharacteristic::PROPERTY_READ |
-                             BLECharacteristic::PROPERTY_NOTIFY
-                           );
-    pStatusCharacteristic->addDescriptor(new BLE2902());
-
-    pService->start();
-
-    BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
-    pAdvertising->addServiceUUID(SERVICE_UUID);
-    pAdvertising->setScanResponse(true);
-    pAdvertising->setMinPreferred(0x06);
-    pAdvertising->setMinPreferred(0x12);
-    BLEDevice::startAdvertising();
-
-    Serial.println("[BLE] Server started, advertising...");
 }
 
 // ========== Setup & Loop ==========
@@ -456,14 +275,17 @@ void setup() {
     // BLE 초기화 (나중에!)
     initBLE();
 
-    Serial.println("Ready! Connecting to Galaxy Buds...");
-
-    // Galaxy Buds 연결 시작
-    delay(1000);
-    esp_spp_start_discovery(BUDS_MAC);
+    Serial.println("Ready! Waiting for commands...");
 }
 
 void loop() {
+    // 연결 요청 처리
+    if (connect_requested && !spp_connected) {
+        connect_requested = false;
+        Serial.println("[LOOP] Connecting to Galaxy Buds...");
+        esp_spp_start_discovery(BUDS_MAC);
+    }
+
     // 주기적으로 Extended Status 요청 (10초마다)
     static unsigned long lastStatusRequest = 0;
     unsigned long now = millis();

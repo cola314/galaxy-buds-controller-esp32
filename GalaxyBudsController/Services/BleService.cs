@@ -14,16 +14,19 @@ public class BleService
     private ICharacteristic? _noiseControlCharacteristic;
     private ICharacteristic? _batteryCharacteristic;
     private ICharacteristic? _statusCharacteristic;
+    private ICharacteristic? _commandCharacteristic;
 
     // ESP32 BLE Service UUID (사용자가 ESP32에서 정의할 UUID)
     private static readonly Guid ServiceUuid = Guid.Parse("12345678-1234-5678-1234-56789abcdef0");
     private static readonly Guid NoiseControlCharacteristicUuid = Guid.Parse("12345678-1234-5678-1234-56789abcdef1");
     private static readonly Guid BatteryCharacteristicUuid = Guid.Parse("12345678-1234-5678-1234-56789abcdef2");
     private static readonly Guid StatusCharacteristicUuid = Guid.Parse("12345678-1234-5678-1234-56789abcdef3");
+    private static readonly Guid CommandCharacteristicUuid = Guid.Parse("12345678-1234-5678-1234-56789abcdef4");
 
     public event EventHandler<DeviceEventArgs>? DeviceDiscovered;
     public event EventHandler<CharacteristicUpdatedEventArgs>? BatteryUpdated;
     public event EventHandler<CharacteristicUpdatedEventArgs>? StatusUpdated;
+    public event EventHandler<CharacteristicUpdatedEventArgs>? CommandResult;
     public event EventHandler? Connected;
     public event EventHandler? Disconnected;
 
@@ -87,6 +90,7 @@ public class BleService
             _noiseControlCharacteristic = characteristics.FirstOrDefault(c => c.Id == NoiseControlCharacteristicUuid);
             _batteryCharacteristic = characteristics.FirstOrDefault(c => c.Id == BatteryCharacteristicUuid);
             _statusCharacteristic = characteristics.FirstOrDefault(c => c.Id == StatusCharacteristicUuid);
+            _commandCharacteristic = characteristics.FirstOrDefault(c => c.Id == CommandCharacteristicUuid);
 
             // Subscribe to notifications
             if (_batteryCharacteristic != null)
@@ -99,6 +103,12 @@ public class BleService
             {
                 _statusCharacteristic.ValueUpdated += OnStatusCharacteristicUpdated;
                 await _statusCharacteristic.StartUpdatesAsync();
+            }
+
+            if (_commandCharacteristic != null)
+            {
+                _commandCharacteristic.ValueUpdated += OnCommandCharacteristicUpdated;
+                await _commandCharacteristic.StartUpdatesAsync();
             }
 
             return true;
@@ -150,6 +160,23 @@ public class BleService
         }
     }
 
+    public async Task<bool> TestBudsConnectionAsync()
+    {
+        if (_commandCharacteristic == null || !IsConnected)
+            return false;
+
+        try
+        {
+            // CMD_TEST_CONNECTION = 0x01
+            await _commandCharacteristic.WriteAsync(new byte[] { 0x01 });
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private void OnDeviceDiscovered(object? sender, DeviceEventArgs e)
     {
         DeviceDiscovered?.Invoke(this, e);
@@ -173,5 +200,10 @@ public class BleService
     private void OnStatusCharacteristicUpdated(object? sender, CharacteristicUpdatedEventArgs e)
     {
         StatusUpdated?.Invoke(this, e);
+    }
+
+    private void OnCommandCharacteristicUpdated(object? sender, CharacteristicUpdatedEventArgs e)
+    {
+        CommandResult?.Invoke(this, e);
     }
 }

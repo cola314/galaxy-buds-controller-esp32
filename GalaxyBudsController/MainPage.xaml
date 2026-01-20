@@ -34,6 +34,24 @@
                 </VerticalStackLayout>
             </Frame>
 
+            <!-- Buds Connection Test -->
+            <Frame BorderColor="LightGray" CornerRadius="10" Padding="15">
+                <VerticalStackLayout Spacing="10">
+                    <Label Text="Galaxy Buds Status" FontSize="18" FontAttributes="Bold" />
+
+                    <Button x:Name="TestConnectionButton"
+                            Text="Test Buds Connection"
+                            Clicked="OnTestConnectionClicked"
+                            IsEnabled="False"
+                            HorizontalOptions="Fill" />
+
+                    <Label x:Name="BudsConnectionStatus"
+                           Text="Not tested"
+                           TextColor="Gray"
+                           HorizontalOptions="Center" />
+                </VerticalStackLayout>
+            </Frame>
+
             <!-- Battery Status -->
             <Frame BorderColor="LightGray" CornerRadius="10" Padding="15">
                 <VerticalStackLayout Spacing="10">

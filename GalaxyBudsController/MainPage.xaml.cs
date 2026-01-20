@@ -22,6 +22,7 @@ public partial class MainPage : ContentPage
         _bleService.Disconnected += OnDisconnected;
         _bleService.BatteryUpdated += OnBatteryUpdated;
         _bleService.StatusUpdated += OnStatusUpdated;
+        _bleService.CommandResult += OnCommandResult;
     }
 
     private async void OnScanClicked(object? sender, EventArgs e)
@@ -155,6 +156,59 @@ public partial class MainPage : ContentPage
         });
     }
 
+    private async void OnTestConnectionClicked(object? sender, EventArgs e)
+    {
+        TestConnectionButton.IsEnabled = false;
+        TestConnectionButton.Text = "Testing...";
+        BudsConnectionStatus.Text = "Sending command to ESP32...";
+        BudsConnectionStatus.TextColor = Colors.Orange;
+
+        try
+        {
+            var success = await _bleService.TestBudsConnectionAsync();
+            if (!success)
+            {
+                BudsConnectionStatus.Text = "Failed to send command";
+                BudsConnectionStatus.TextColor = Colors.Red;
+                TestConnectionButton.Text = "Test Buds Connection";
+                TestConnectionButton.IsEnabled = true;
+            }
+            // 결과는 OnCommandResult 이벤트로 받음
+        }
+        catch (Exception ex)
+        {
+            BudsConnectionStatus.Text = $"Error: {ex.Message}";
+            BudsConnectionStatus.TextColor = Colors.Red;
+            TestConnectionButton.Text = "Test Buds Connection";
+            TestConnectionButton.IsEnabled = true;
+        }
+    }
+
+    private void OnCommandResult(object? sender, CharacteristicUpdatedEventArgs e)
+    {
+        if (e.Characteristic.Value.Length >= 1)
+        {
+            var result = e.Characteristic.Value[0];
+
+            MainThread.BeginInvokeOnMainThread(() =>
+            {
+                if (result == 0x01) // RESULT_SUCCESS
+                {
+                    BudsConnectionStatus.Text = "Connected successfully";
+                    BudsConnectionStatus.TextColor = Colors.Green;
+                }
+                else // RESULT_FAILED
+                {
+                    BudsConnectionStatus.Text = "Connection failed";
+                    BudsConnectionStatus.TextColor = Colors.Red;
+                }
+
+                TestConnectionButton.Text = "Test Buds Connection";
+                TestConnectionButton.IsEnabled = true;
+            });
+        }
+    }
+
     private void OnConnected(object? sender, EventArgs e)
     {
         MainThread.BeginInvokeOnMainThread(() =>
@@ -162,6 +216,7 @@ public partial class MainPage : ContentPage
             ConnectionStatus.Text = "Connected";
             ConnectionStatus.TextColor = Colors.Green;
             ConnectButton.Text = "Connected";
+            TestConnectionButton.IsEnabled = true;
             EnableControls(true);
         });
     }
@@ -174,6 +229,7 @@ public partial class MainPage : ContentPage
             ConnectionStatus.TextColor = Colors.Red;
             ConnectButton.Text = "Connect";
             ConnectButton.IsEnabled = true;
+            TestConnectionButton.IsEnabled = false;
             EnableControls(false);
         });
     }
@@ -184,6 +240,9 @@ public partial class MainPage : ContentPage
         {
             var left = e.Characteristic.Value[0];
             var right = e.Characteristic.Value[1];
+
+            _status.BatteryLeft = left;
+            _status.BatteryRight = right;
 
             MainThread.BeginInvokeOnMainThread(() =>
             {
