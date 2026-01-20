@@ -21,6 +21,10 @@ static const uint8_t BUDS_SPP_UUID[16] = {
 #define NOISE_CHAR_UUID     "12345678-1234-5678-1234-56789abcdef1"
 #define BATTERY_CHAR_UUID   "12345678-1234-5678-1234-56789abcdef2"
 #define STATUS_CHAR_UUID    "12345678-1234-5678-1234-56789abcdef3"
+#define COMMAND_CHAR_UUID   "12345678-1234-5678-1234-56789abcdef4"
+
+// 명령 코드
+#define CMD_TEST_CONNECTION 0x01  // Buds 연결 테스트
 
 // ========== 프로토콜 상수 ==========
 #define SOM 0xFD
@@ -52,7 +56,12 @@ BLEServer* pServer = nullptr;
 BLECharacteristic* pNoiseCharacteristic = nullptr;
 BLECharacteristic* pBatteryCharacteristic = nullptr;
 BLECharacteristic* pStatusCharacteristic = nullptr;
+BLECharacteristic* pCommandCharacteristic = nullptr;
 bool ble_device_connected = false;
+
+// 연결 요청 플래그
+volatile bool connect_requested = false;
+volatile bool disconnect_after_status = false;
 
 // ========== CRC16 테이블 ==========
 static const uint16_t CRC_TABLE[256] = {
@@ -182,10 +191,32 @@ void parsePacket(uint8_t *data, int len) {
             else if (payload[0] == MSG_ANC_LEVEL) {
                 anc_level = payload[1];
                 Serial.printf("[ACK] ANC Level: %d\n", anc_level);
+
+                // BLE로 상태 업데이트
+                if (ble_device_connected && pStatusCharacteristic) {
+                    uint8_t statusData[3] = {
+                        (uint8_t)wearing,
+                        (uint8_t)noise_control,
+                        (uint8_t)anc_level
+                    };
+                    pStatusCharacteristic->setValue(statusData, 3);
+                    pStatusCharacteristic->notify();
+                }
             }
             else if (payload[0] == MSG_AMBIENT_LEVEL) {
                 ambient_level = payload[1];
                 Serial.printf("[ACK] Ambient Level: %d\n", ambient_level);
+
+                // BLE로 상태 업데이트
+                if (ble_device_connected && pStatusCharacteristic) {
+                    uint8_t statusData[3] = {
+                        (uint8_t)wearing,
+                        (uint8_t)noise_control,
+                        (uint8_t)ambient_level
+                    };
+                    pStatusCharacteristic->setValue(statusData, 3);
+                    pStatusCharacteristic->notify();
+                }
             }
         }
 
@@ -208,12 +239,40 @@ class ServerCallbacks: public BLEServerCallbacks {
     }
 };
 
+class CommandCallbacks: public BLECharacteristicCallbacks {
+    void onWrite(BLECharacteristic *pCharacteristic) {
+        uint8_t* pData = pCharacteristic->getData();
+        size_t len = pCharacteristic->getValue().length();
+        if (len > 0) {
+            uint8_t cmd = pData[0];
+            if (cmd == CMD_TEST_CONNECTION) {
+                Serial.println("[BLE] Test connection requested");
+                connect_requested = true;
+                disconnect_after_status = true;
+            }
+        }
+    }
+};
+
 class NoiseControlCallbacks: public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic *pCharacteristic) {
         uint8_t* pData = pCharacteristic->getData();
         size_t len = pCharacteristic->getValue().length();
-        if (len > 0 && spp_connected) {
+        if (len > 0) {
             uint8_t mode = pData[0];
+
+            // Buds 연결되어 있지 않으면 연결 요청
+            if (!spp_connected) {
+                Serial.println("[BLE] Noise control requested, connecting to Buds...");
+                connect_requested = true;
+                // 명령을 나중에 실행하기 위해 저장 (여기서는 간단히 처리)
+                delay(2000);  // 연결 대기
+            }
+
+            if (!spp_connected) {
+                Serial.println("[BLE] Buds not connected, command failed");
+                return;
+            }
 
             // 레벨 조정인지 확인 (2바이트)
             if (len == 2) {
@@ -263,12 +322,11 @@ void spp_callback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param) {
                 spp_connected = true;
                 Serial.println("[SPP] Connected to Buds!");
 
-                // 초기 상태 요청
+                // Extended Status 요청 (배터리 등 상세 정보)
                 uint8_t pkt[16];
-                uint8_t payload[] = {0xFF};
-                int len = createPacket(pkt, MSG_NOISE_CONTROL, payload, 1);
+                int len = createPacket(pkt, MSG_EXTENDED_STATUS, nullptr, 0);
                 esp_spp_write(spp_handle, len, pkt);
-                Serial.println("[SPP] Query current state");
+                Serial.println("[SPP] Request Extended Status");
             } else {
                 Serial.printf("[SPP] Connection failed: %d\n", param->open.status);
             }
@@ -406,5 +464,16 @@ void setup() {
 }
 
 void loop() {
-    delay(10);
+    // 주기적으로 Extended Status 요청 (10초마다)
+    static unsigned long lastStatusRequest = 0;
+    unsigned long now = millis();
+
+    if (spp_connected && (now - lastStatusRequest > 10000)) {
+        uint8_t pkt[16];
+        int len = createPacket(pkt, MSG_EXTENDED_STATUS, nullptr, 0);
+        esp_spp_write(spp_handle, len, pkt);
+        lastStatusRequest = now;
+    }
+
+    delay(100);
 }
