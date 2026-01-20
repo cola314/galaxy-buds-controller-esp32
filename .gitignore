@@ -1,0 +1,35 @@
+# Build artifacts
+build/
+*.o
+*.a
+*.elf
+*.bin
+*.hex
+*.map
+
+# Arduino IDE
+*.eep
+*.bak
+*.orig
+
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# IDE settings
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary files
+*.tmp
+*.temp
+*.log
