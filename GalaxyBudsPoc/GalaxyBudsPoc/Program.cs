@@ -13,6 +13,8 @@ class Program
     private const byte MsgIdNoiseControls = 0x78;
     private const byte MsgIdExtendedStatusRequest = 0x61;
     private const byte MsgIdAck = 0x42;
+    private const byte MsgIdAmbientSoundLevel = 0x84;
+    private const byte MsgIdNoiseReductionLevel = 0x83;
 
     private const byte SOM = 0xFD;
     private const byte EOM = 0xDD;
@@ -24,6 +26,14 @@ class Program
     static async Task Main(string[] args)
     {
         Console.OutputEncoding = Encoding.UTF8;
+
+        // 통합 테스트 모드
+        if (args.Length > 0 && args[0] == "--test")
+        {
+            await IntegrationTest.RunAsync();
+            return;
+        }
+
         Console.CursorVisible = false;
 
         try
@@ -93,6 +103,54 @@ class Program
                 case '3':
                     await SendPacketAsync(stream, MsgIdNoiseControls, [0x03]);
                     break;
+                case '+':
+                case '=':
+                    {
+                        byte msgId = 0;
+                        int newLevel = 0;
+                        lock (_lock)
+                        {
+                            if (_status.NoiseControl == 2 && _status.AmbientSoundLevel < 4)
+                            {
+                                _status.AmbientSoundLevel++;
+                                msgId = MsgIdAmbientSoundLevel;
+                                newLevel = _status.AmbientSoundLevel;
+                            }
+                            else if (_status.NoiseControl == 1 && _status.NoiseReductionLevel < 4)
+                            {
+                                _status.NoiseReductionLevel++;
+                                msgId = MsgIdNoiseReductionLevel;
+                                newLevel = _status.NoiseReductionLevel;
+                            }
+                        }
+                        if (msgId != 0)
+                            await SendPacketAsync(stream, msgId, [(byte)newLevel]);
+                    }
+                    break;
+                case '-':
+                case '_':
+                    {
+                        byte msgId = 0;
+                        int newLevel = 0;
+                        lock (_lock)
+                        {
+                            if (_status.NoiseControl == 2 && _status.AmbientSoundLevel > 0)
+                            {
+                                _status.AmbientSoundLevel--;
+                                msgId = MsgIdAmbientSoundLevel;
+                                newLevel = _status.AmbientSoundLevel;
+                            }
+                            else if (_status.NoiseControl == 1 && _status.NoiseReductionLevel > 0)
+                            {
+                                _status.NoiseReductionLevel--;
+                                msgId = MsgIdNoiseReductionLevel;
+                                newLevel = _status.NoiseReductionLevel;
+                            }
+                        }
+                        if (msgId != 0)
+                            await SendPacketAsync(stream, msgId, [(byte)newLevel]);
+                    }
+                    break;
                 case 's':
                 case 'S':
                     await SendPacketAsync(stream, MsgIdExtendedStatusRequest, []);
@@ -136,12 +194,24 @@ class Program
                 _ => ("?", "--")
             };
             Console.WriteLine($"║  모드:    {icon} {name,-23} ║");
+
+            // 레벨 표시
+            if (_status.NoiseControl == 1 && _status.NoiseReductionLevel >= 0)
+            {
+                var levelBar = new string('■', _status.NoiseReductionLevel) + new string('□', 4 - _status.NoiseReductionLevel);
+                Console.WriteLine($"║  ANC 레벨: {levelBar} ({_status.NoiseReductionLevel})              ║");
+            }
+            else if (_status.NoiseControl == 2 && _status.AmbientSoundLevel >= 0)
+            {
+                var levelBar = new string('■', _status.AmbientSoundLevel) + new string('□', 4 - _status.AmbientSoundLevel);
+                Console.WriteLine($"║  주변음 레벨: {levelBar} ({_status.AmbientSoundLevel})           ║");
+            }
         }
 
         Console.WriteLine("╚═══════════════════════════════════════╝");
         Console.WriteLine();
         Console.WriteLine("  [0] Off    [1] ANC    [2] Ambient    [3] Adaptive");
-        Console.WriteLine("  [S] 새로고침              [Q] 종료");
+        Console.WriteLine("  [+/-] 레벨 조정    [S] 새로고침    [Q] 종료");
         Console.WriteLine();
         Console.Write("  선택: ");
     }
@@ -195,19 +265,30 @@ class Program
             switch (msgId)
             {
                 case MsgIdExtendedStatusRequest: // 0x61
-                    if (payload.Length > 19)
+                    if (payload.Length > 31)
                     {
                         _status.BatteryLeft = payload[2];
                         _status.BatteryRight = payload[3];
                         _status.IsWearing = (payload[4] & 0x01) != 0;
-                        // offset 19는 부정확할 수 있음, ACK에서 가져옴
+                        _status.NoiseControl = payload[31];
                     }
                     break;
 
                 case MsgIdAck: // 0x42 - ACK with current mode
-                    if (payload.Length >= 2 && payload[0] == MsgIdNoiseControls)
+                    if (payload.Length >= 2)
                     {
-                        _status.NoiseControl = payload[1];
+                        if (payload[0] == MsgIdNoiseControls)
+                        {
+                            _status.NoiseControl = payload[1];
+                        }
+                        else if (payload[0] == MsgIdAmbientSoundLevel)
+                        {
+                            _status.AmbientSoundLevel = payload[1];
+                        }
+                        else if (payload[0] == MsgIdNoiseReductionLevel)
+                        {
+                            _status.NoiseReductionLevel = payload[1];
+                        }
                     }
                     break;
             }
@@ -295,4 +376,6 @@ class BudsStatus
     public int BatteryRight { get; set; } = -1;
     public bool? IsWearing { get; set; }
     public int NoiseControl { get; set; } = -1;
+    public int AmbientSoundLevel { get; set; } = -1;
+    public int NoiseReductionLevel { get; set; } = -1;
 }
