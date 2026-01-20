@@ -8,48 +8,54 @@ namespace GalaxyBudsPoc;
 
 class Program
 {
-    // Galaxy Buds 3 Pro SPP UUID
     private static readonly Guid SppUuid = new("2e73a4ad-332d-41fc-90e2-16bef06523f2");
 
-    // Noise Control Modes
-    private const byte NoiseControlOff = 0x00;
-    private const byte NoiseControlAnc = 0x01;
-    private const byte NoiseControlAmbient = 0x02;
-    private const byte NoiseControlAdaptive = 0x03;
-
-    // Message IDs
     private const byte MsgIdNoiseControls = 0x78;
     private const byte MsgIdExtendedStatusRequest = 0x61;
+    private const byte MsgIdAck = 0x42;
 
-    // Packet markers
     private const byte SOM = 0xFD;
     private const byte EOM = 0xDD;
+
+    private static BudsStatus _status = new();
+    private static readonly object _lock = new();
+    private static CancellationTokenSource? _cts;
 
     static async Task Main(string[] args)
     {
         Console.OutputEncoding = Encoding.UTF8;
-        Console.WriteLine("=== Galaxy Buds 3 Pro PoC ===\n");
+        Console.CursorVisible = false;
 
-        // Find paired Galaxy Buds
-        var device = await FindGalaxyBudsAsync();
+        try
+        {
+            await RunAsync();
+        }
+        finally
+        {
+            Console.CursorVisible = true;
+        }
+    }
+
+    static async Task RunAsync()
+    {
+        Console.WriteLine("=== Galaxy Buds 3 Pro ===\n");
+
+        using var client = new BluetoothClient();
+        var device = client.PairedDevices
+            .FirstOrDefault(d => d.DeviceName.Contains("Buds", StringComparison.OrdinalIgnoreCase));
+
         if (device == null)
         {
-            Console.WriteLine("Galaxy Buds 3 Pro를 찾을 수 없습니다.");
-            Console.WriteLine("페어링되어 있는지 확인하세요.");
+            Console.WriteLine("Galaxy Buds를 찾을 수 없습니다.");
             return;
         }
 
-        Console.WriteLine($"디바이스 발견: {device.DeviceName}");
-        Console.WriteLine($"주소: {device.DeviceAddress}\n");
-
-        // Connect via SPP
-        using var client = new BluetoothClient();
+        Console.WriteLine($"디바이스: {device.DeviceName}");
         Console.WriteLine("연결 중...");
 
         try
         {
             client.Connect(device.DeviceAddress, SppUuid);
-            Console.WriteLine("연결 성공!\n");
         }
         catch (Exception ex)
         {
@@ -59,100 +65,172 @@ class Program
 
         using var stream = client.GetStream();
 
-        // Request extended status first
-        Console.WriteLine("상태 요청 중 (0x61)...");
-        var statusPacket = CreatePacket(MsgIdExtendedStatusRequest, []);
-        await stream.WriteAsync(statusPacket);
-        await stream.FlushAsync();
+        // Start listener
+        _cts = new CancellationTokenSource();
+        _ = Task.Run(() => ListenAsync(stream, _cts.Token));
 
-        // Wait for response
-        await Task.Delay(500);
-        await ReadResponseAsync(stream);
+        // Query current state: 0x78 with 0xFF triggers 0x61 + 0x42 ACK with current mode
+        await SendPacketAsync(stream, MsgIdNoiseControls, [0xFF]);
+        await Task.Delay(600);
 
-        // Interactive menu
+        // Main loop
         while (true)
         {
-            Console.WriteLine("\n노이즈 컨트롤 모드 선택:");
-            Console.WriteLine("  0. Off (끄기)");
-            Console.WriteLine("  1. ANC (노이즈 캔슬링)");
-            Console.WriteLine("  2. Ambient (주변 소리)");
-            Console.WriteLine("  3. Adaptive (소음 제어 최적화)");
-            Console.WriteLine("  q. 종료");
-            Console.Write("\n선택: ");
+            DrawUI();
 
-            var input = Console.ReadLine()?.Trim().ToLower();
-
-            if (input == "q") break;
-
-            if (byte.TryParse(input, out var mode) && mode <= 3)
+            var key = Console.ReadKey(true);
+            switch (key.KeyChar)
             {
-                var modeName = mode switch
-                {
-                    0 => "Off",
-                    1 => "ANC",
-                    2 => "Ambient",
-                    3 => "Adaptive",
-                    _ => "Unknown"
-                };
-
-                Console.WriteLine($"\n{modeName} 모드로 변경 중...");
-
-                var packet = CreatePacket(MsgIdNoiseControls, [mode]);
-                PrintPacket("TX", packet);
-
-                await stream.WriteAsync(packet);
-                await stream.FlushAsync();
-
-                await Task.Delay(300);
-                await ReadResponseAsync(stream);
-
-                Console.WriteLine("명령 전송 완료!");
+                case '0':
+                    await SendPacketAsync(stream, MsgIdNoiseControls, [0x00]);
+                    break;
+                case '1':
+                    await SendPacketAsync(stream, MsgIdNoiseControls, [0x01]);
+                    break;
+                case '2':
+                    await SendPacketAsync(stream, MsgIdNoiseControls, [0x02]);
+                    break;
+                case '3':
+                    await SendPacketAsync(stream, MsgIdNoiseControls, [0x03]);
+                    break;
+                case 's':
+                case 'S':
+                    await SendPacketAsync(stream, MsgIdExtendedStatusRequest, []);
+                    break;
+                case 'q':
+                case 'Q':
+                    _cts.Cancel();
+                    return;
             }
-            else
-            {
-                Console.WriteLine("잘못된 입력입니다.");
-            }
+            await Task.Delay(300);
         }
-
-        Console.WriteLine("\n연결 종료.");
     }
 
-    static async Task<BluetoothDeviceInfo?> FindGalaxyBudsAsync()
+    static void DrawUI()
     {
-        Console.WriteLine("페어링된 디바이스 검색 중...\n");
+        Console.Clear();
+        Console.WriteLine("╔═══════════════════════════════════════╗");
+        Console.WriteLine("║       Galaxy Buds 3 Pro Status        ║");
+        Console.WriteLine("╠═══════════════════════════════════════╣");
 
-        using var client = new BluetoothClient();
-        var devices = client.PairedDevices;
-
-        foreach (var device in devices)
+        lock (_lock)
         {
-            Console.WriteLine($"  - {device.DeviceName} ({device.DeviceAddress})");
+            var left = _status.BatteryLeft >= 0 ? $"{_status.BatteryLeft}%" : "--";
+            var right = _status.BatteryRight >= 0 ? $"{_status.BatteryRight}%" : "--";
+            Console.WriteLine($"║  배터리:  L {left,-4} │ R {right,-4}          ║");
 
-            if (device.DeviceName.Contains("Galaxy Buds3 Pro", StringComparison.OrdinalIgnoreCase) ||
-                device.DeviceName.Contains("Buds3 Pro", StringComparison.OrdinalIgnoreCase) ||
-                device.DeviceName.Contains("Galaxy Buds 3 Pro", StringComparison.OrdinalIgnoreCase))
+            var wearing = _status.IsWearing switch
             {
-                return device;
-            }
+                true => "착용 중",
+                false => "미착용",
+                _ => "--"
+            };
+            Console.WriteLine($"║  착용:    {wearing,-27} ║");
+
+            var (icon, name) = _status.NoiseControl switch
+            {
+                0 => ("○", "Off (끄기)"),
+                1 => ("●", "ANC (노이즈 캔슬링)"),
+                2 => ("◐", "Ambient (주변 소리)"),
+                3 => ("◑", "Adaptive (최적화)"),
+                _ => ("?", "--")
+            };
+            Console.WriteLine($"║  모드:    {icon} {name,-23} ║");
         }
 
+        Console.WriteLine("╚═══════════════════════════════════════╝");
         Console.WriteLine();
-        return null;
+        Console.WriteLine("  [0] Off    [1] ANC    [2] Ambient    [3] Adaptive");
+        Console.WriteLine("  [S] 새로고침              [Q] 종료");
+        Console.WriteLine();
+        Console.Write("  선택: ");
+    }
+
+    static async Task ListenAsync(Stream stream, CancellationToken ct)
+    {
+        var buffer = new byte[1024];
+
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                if (stream is NetworkStream ns && ns.DataAvailable)
+                {
+                    var len = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), ct);
+                    if (len > 0) ParsePackets(buffer[..len]);
+                }
+                await Task.Delay(50, ct);
+            }
+            catch (OperationCanceledException) { break; }
+            catch { }
+        }
+    }
+
+    static void ParsePackets(byte[] data)
+    {
+        int i = 0;
+        while (i < data.Length)
+        {
+            if (data[i] != SOM) { i++; continue; }
+            if (i + 4 > data.Length) break;
+
+            int length = data[i + 1] | ((data[i + 2] & 0x0F) << 8);
+            int end = i + 4 + length - 3 + 2 + 1;
+
+            if (end > data.Length) break;
+            if (data[end - 1] != EOM) { i++; continue; }
+
+            var msgId = data[i + 3];
+            var payload = data[(i + 4)..(end - 3)];
+
+            ProcessMessage(msgId, payload);
+            i = end;
+        }
+    }
+
+    static void ProcessMessage(byte msgId, byte[] payload)
+    {
+        lock (_lock)
+        {
+            switch (msgId)
+            {
+                case MsgIdExtendedStatusRequest: // 0x61
+                    if (payload.Length > 19)
+                    {
+                        _status.BatteryLeft = payload[2];
+                        _status.BatteryRight = payload[3];
+                        _status.IsWearing = (payload[4] & 0x01) != 0;
+                        // offset 19는 부정확할 수 있음, ACK에서 가져옴
+                    }
+                    break;
+
+                case MsgIdAck: // 0x42 - ACK with current mode
+                    if (payload.Length >= 2 && payload[0] == MsgIdNoiseControls)
+                    {
+                        _status.NoiseControl = payload[1];
+                    }
+                    break;
+            }
+        }
+    }
+
+    static async Task SendPacketAsync(Stream stream, byte msgId, byte[] payload)
+    {
+        var packet = CreatePacket(msgId, payload);
+        await stream.WriteAsync(packet);
+        await stream.FlushAsync();
     }
 
     static byte[] CreatePacket(byte msgId, byte[] payload)
     {
-        // Length = MSG_ID(1) + PAYLOAD(N) + CRC(2)
         int length = 1 + payload.Length + 2;
 
-        // Build CRC data: MSG_ID + PAYLOAD
         var crcData = new byte[1 + payload.Length];
         crcData[0] = msgId;
         Array.Copy(payload, 0, crcData, 1, payload.Length);
 
         ushort crc = Crc16(crcData);
 
-        // Build packet
         var packet = new byte[7 + payload.Length];
         packet[0] = SOM;
         packet[1] = (byte)(length & 0xFF);
@@ -206,83 +284,15 @@ class Program
     {
         ushort crc = 0;
         foreach (var b in data)
-        {
             crc = (ushort)(CrcTable[((crc >> 8) ^ b) & 0xFF] ^ (crc << 8));
-        }
         return crc;
     }
+}
 
-    static async Task ReadResponseAsync(Stream stream)
-    {
-        var buffer = new byte[1024];
-        try
-        {
-            if (stream is NetworkStream ns && ns.DataAvailable)
-            {
-                var bytesRead = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length));
-                if (bytesRead > 0)
-                {
-                    PrintPacket("RX", buffer[..bytesRead]);
-                    ParseResponse(buffer[..bytesRead]);
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"응답 읽기 오류: {ex.Message}");
-        }
-    }
-
-    static void ParseResponse(byte[] data)
-    {
-        if (data.Length < 7 || data[0] != SOM || data[^1] != EOM)
-        {
-            return;
-        }
-
-        var msgId = data[3];
-
-        switch (msgId)
-        {
-            case 0x61: // Extended Status Response
-                Console.WriteLine("  [Extended Status 응답 수신]");
-                if (data.Length > 22)
-                {
-                    var noiseControl = data[22]; // offset 19 in payload
-                    var modeName = noiseControl switch
-                    {
-                        0 => "Off",
-                        1 => "ANC",
-                        2 => "Ambient",
-                        3 => "Adaptive",
-                        _ => $"Unknown ({noiseControl})"
-                    };
-                    Console.WriteLine($"  현재 노이즈 컨트롤: {modeName}");
-                }
-                break;
-
-            case 0x77: // Noise Controls Update
-                Console.WriteLine("  [Noise Control 업데이트 수신]");
-                if (data.Length > 4)
-                {
-                    var noiseControl = data[4];
-                    var modeName = noiseControl switch
-                    {
-                        0 => "Off",
-                        1 => "ANC",
-                        2 => "Ambient",
-                        3 => "Adaptive",
-                        _ => $"Unknown ({noiseControl})"
-                    };
-                    Console.WriteLine($"  노이즈 컨트롤 모드: {modeName}");
-                }
-                break;
-        }
-    }
-
-    static void PrintPacket(string prefix, byte[] packet)
-    {
-        var hex = BitConverter.ToString(packet).Replace("-", " ");
-        Console.WriteLine($"  [{prefix}] {hex}");
-    }
+class BudsStatus
+{
+    public int BatteryLeft { get; set; } = -1;
+    public int BatteryRight { get; set; } = -1;
+    public bool? IsWearing { get; set; }
+    public int NoiseControl { get; set; } = -1;
 }
