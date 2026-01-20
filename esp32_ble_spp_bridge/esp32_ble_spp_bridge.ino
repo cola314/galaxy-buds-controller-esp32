@@ -39,6 +39,8 @@ volatile bool disconnect_after_status = false;
 volatile bool connection_test_requested = false;
 unsigned long status_received_time = 0;
 bool waiting_for_disconnect = false;
+unsigned long connection_attempt_time = 0;
+int connection_retry_count = 0;
 
 // 보류 중인 노이즈 컨트롤 명령
 struct PendingCommand {
@@ -180,18 +182,32 @@ void spp_callback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param) {
             if (param->disc_comp.status == ESP_SPP_SUCCESS) {
                 Serial.printf("[SPP] Found %d services\n", param->disc_comp.scn_num);
                 if (param->disc_comp.scn_num > 0) {
+                    connection_retry_count = 0;
                     esp_spp_connect(ESP_SPP_SEC_NONE, ESP_SPP_ROLE_MASTER,
                                     param->disc_comp.scn[0], BUDS_MAC);
                 }
             } else {
                 Serial.println("[SPP] Discovery failed");
 
-                // 연결 테스트였으면 실패 알림
-                if (connection_test_requested && ble_device_connected && pCommandCharacteristic) {
-                    uint8_t result = RESULT_FAILED;
-                    pCommandCharacteristic->setValue(&result, 1);
-                    pCommandCharacteristic->notify();
-                    connection_test_requested = false;
+                // 재시도 (최대 3회)
+                if (connection_retry_count < 3) {
+                    connection_retry_count++;
+                    Serial.printf("[SPP] Retrying... (%d/3)\n", connection_retry_count);
+                    connect_requested = true;
+                } else {
+                    Serial.println("[SPP] Max retries reached, giving up");
+                    connection_retry_count = 0;
+
+                    // 연결 테스트였으면 실패 알림
+                    if (connection_test_requested && ble_device_connected && pCommandCharacteristic) {
+                        uint8_t result = RESULT_FAILED;
+                        pCommandCharacteristic->setValue(&result, 1);
+                        pCommandCharacteristic->notify();
+                        connection_test_requested = false;
+                    }
+
+                    // 보류 중인 명령 클리어
+                    pending_noise_cmd.has_command = false;
                 }
             }
             break;
@@ -251,16 +267,26 @@ void spp_callback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param) {
             } else {
                 Serial.printf("[SPP] Connection failed: %d\n", param->open.status);
 
-                // 연결 테스트였으면 실패 알림
-                if (connection_test_requested && ble_device_connected && pCommandCharacteristic) {
-                    uint8_t result = RESULT_FAILED;
-                    pCommandCharacteristic->setValue(&result, 1);
-                    pCommandCharacteristic->notify();
-                    connection_test_requested = false;
-                }
+                // 재시도 (최대 3회)
+                if (connection_retry_count < 3) {
+                    connection_retry_count++;
+                    Serial.printf("[SPP] Retrying connection... (%d/3)\n", connection_retry_count);
+                    connect_requested = true;
+                } else {
+                    Serial.println("[SPP] Max connection retries reached");
+                    connection_retry_count = 0;
 
-                // 보류 중인 명령 클리어
-                pending_noise_cmd.has_command = false;
+                    // 연결 테스트였으면 실패 알림
+                    if (connection_test_requested && ble_device_connected && pCommandCharacteristic) {
+                        uint8_t result = RESULT_FAILED;
+                        pCommandCharacteristic->setValue(&result, 1);
+                        pCommandCharacteristic->notify();
+                        connection_test_requested = false;
+                    }
+
+                    // 보류 중인 명령 클리어
+                    pending_noise_cmd.has_command = false;
+                }
             }
             break;
 
@@ -354,8 +380,32 @@ void loop() {
     // 연결 요청 처리
     if (connect_requested && !spp_connected) {
         connect_requested = false;
+        connection_attempt_time = now;
         Serial.println("[LOOP] Connecting to Galaxy Buds...");
         esp_spp_start_discovery(BUDS_MAC);
+    }
+
+    // 연결 타임아웃 체크 (10초)
+    if (!spp_connected && connection_attempt_time > 0 && (now - connection_attempt_time > 10000)) {
+        Serial.println("[LOOP] Connection timeout");
+        connection_attempt_time = 0;
+        connection_retry_count = 0;
+
+        // 연결 테스트였으면 실패 알림
+        if (connection_test_requested && ble_device_connected && pCommandCharacteristic) {
+            uint8_t result = RESULT_FAILED;
+            pCommandCharacteristic->setValue(&result, 1);
+            pCommandCharacteristic->notify();
+            connection_test_requested = false;
+        }
+
+        // 보류 중인 명령 클리어
+        pending_noise_cmd.has_command = false;
+    }
+
+    // 연결 성공 시 타임아웃 타이머 클리어
+    if (spp_connected && connection_attempt_time > 0) {
+        connection_attempt_time = 0;
     }
 
     // 연결 테스트 후 자동 disconnect (상태 받고 500ms 후)

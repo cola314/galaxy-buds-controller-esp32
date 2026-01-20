@@ -11,6 +11,8 @@ public partial class MainPage : ContentPage
     private readonly List<IDevice> _discoveredDevices = new();
     private BudsStatus _status = new();
     private NoiseControlMode _currentMode = NoiseControlMode.Unknown;
+    private CancellationTokenSource? _testConnectionCts;
+    private CancellationTokenSource? _commandCts;
 
     public MainPage()
     {
@@ -117,15 +119,35 @@ public partial class MainPage : ContentPage
 
     private async Task SetNoiseControlMode(NoiseControlMode mode)
     {
-        var success = await _bleService.SetNoiseControlAsync((byte)mode);
-        if (success)
+        _commandCts?.Cancel();
+        _commandCts = new CancellationTokenSource();
+
+        try
         {
-            _currentMode = mode;
-            UpdateModeDisplay();
+            var success = await _bleService.SetNoiseControlAsync((byte)mode);
+            if (!success)
+            {
+                await DisplayAlert("Error", "Failed to send command to ESP32", "OK");
+                return;
+            }
+
+            // 5초 타임아웃 대기 (StatusUpdated로 결과 받음)
+            var oldMode = _currentMode;
+            await Task.Delay(5000, _commandCts.Token);
+
+            // 타임아웃 (모드 변경 안됨)
+            if (_currentMode == oldMode)
+            {
+                await DisplayAlert("Timeout", "No response from Galaxy Buds", "OK");
+            }
         }
-        else
+        catch (OperationCanceledException)
         {
-            await DisplayAlert("Error", "Failed to set noise control mode", "OK");
+            // StatusUpdated에서 모드 변경됨 (정상)
+        }
+        catch (Exception ex)
+        {
+            await DisplayAlert("Error", $"Command failed: {ex.Message}", "OK");
         }
     }
 
@@ -158,6 +180,9 @@ public partial class MainPage : ContentPage
 
     private async void OnTestConnectionClicked(object? sender, EventArgs e)
     {
+        _testConnectionCts?.Cancel();
+        _testConnectionCts = new CancellationTokenSource();
+
         TestConnectionButton.IsEnabled = false;
         TestConnectionButton.Text = "Testing...";
         BudsConnectionStatus.Text = "Sending command to ESP32...";
@@ -172,8 +197,21 @@ public partial class MainPage : ContentPage
                 BudsConnectionStatus.TextColor = Colors.Red;
                 TestConnectionButton.Text = "Test Buds Connection";
                 TestConnectionButton.IsEnabled = true;
+                return;
             }
-            // 결과는 OnCommandResult 이벤트로 받음
+
+            // 10초 타임아웃 대기
+            await Task.Delay(10000, _testConnectionCts.Token);
+
+            // 타임아웃 발생 (결과 안옴)
+            BudsConnectionStatus.Text = "Connection timeout";
+            BudsConnectionStatus.TextColor = Colors.Red;
+            TestConnectionButton.Text = "Test Buds Connection";
+            TestConnectionButton.IsEnabled = true;
+        }
+        catch (OperationCanceledException)
+        {
+            // OnCommandResult에서 결과 받아서 취소됨 (정상)
         }
         catch (Exception ex)
         {
@@ -205,6 +243,9 @@ public partial class MainPage : ContentPage
 
                 TestConnectionButton.Text = "Test Buds Connection";
                 TestConnectionButton.IsEnabled = true;
+
+                // 타임아웃 취소
+                _testConnectionCts?.Cancel();
             });
         }
     }
@@ -231,6 +272,23 @@ public partial class MainPage : ContentPage
             ConnectButton.IsEnabled = true;
             TestConnectionButton.IsEnabled = false;
             EnableControls(false);
+
+            // 연결 끊김 시 상태 초기화
+            BudsConnectionStatus.Text = "Not tested";
+            BudsConnectionStatus.TextColor = Colors.Gray;
+            BatteryLeftLabel.Text = "--";
+            BatteryRightLabel.Text = "--";
+            WearingStatus.Text = "Not Wearing";
+            CurrentModeLabel.Text = "Current Mode: --";
+            LevelSlider.Value = 0;
+            LevelSlider.IsEnabled = false;
+            LevelLabel.Text = "Level: --";
+
+            // 진행 중인 작업 취소
+            _testConnectionCts?.Cancel();
+            _commandCts?.Cancel();
+
+            DisplayAlert("Connection Lost", "ESP32 connection lost. Please reconnect.", "OK");
         });
     }
 
@@ -277,6 +335,9 @@ public partial class MainPage : ContentPage
                     LevelSlider.IsEnabled = false;
                     LevelLabel.Text = "Level: --";
                 }
+
+                // 명령 타임아웃 취소 (상태 업데이트 받음)
+                _commandCts?.Cancel();
             });
         }
     }
