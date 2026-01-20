@@ -1,0 +1,129 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="GalaxyBudsController.MainPage"
+             Title="Galaxy Buds Controller">
+
+    <ScrollView>
+        <VerticalStackLayout Padding="20" Spacing="20">
+
+            <!-- Connection Section -->
+            <Frame BorderColor="LightGray" CornerRadius="10" Padding="15">
+                <VerticalStackLayout Spacing="10">
+                    <Label Text="Connection" FontSize="18" FontAttributes="Bold" />
+
+                    <Button x:Name="ScanButton"
+                            Text="Scan for ESP32"
+                            Clicked="OnScanClicked"
+                            HorizontalOptions="Fill" />
+
+                    <Picker x:Name="DevicePicker"
+                            Title="Select ESP32 Device"
+                            IsVisible="False" />
+
+                    <Button x:Name="ConnectButton"
+                            Text="Connect"
+                            Clicked="OnConnectClicked"
+                            IsVisible="False"
+                            HorizontalOptions="Fill" />
+
+                    <Label x:Name="ConnectionStatus"
+                           Text="Not Connected"
+                           TextColor="Red"
+                           HorizontalOptions="Center" />
+                </VerticalStackLayout>
+            </Frame>
+
+            <!-- Battery Status -->
+            <Frame BorderColor="LightGray" CornerRadius="10" Padding="15">
+                <VerticalStackLayout Spacing="10">
+                    <Label Text="Battery Status" FontSize="18" FontAttributes="Bold" />
+
+                    <HorizontalStackLayout Spacing="20" HorizontalOptions="Center">
+                        <VerticalStackLayout>
+                            <Label Text="Left" HorizontalOptions="Center" />
+                            <Label x:Name="BatteryLeftLabel"
+                                   Text="--"
+                                   FontSize="24"
+                                   FontAttributes="Bold"
+                                   HorizontalOptions="Center" />
+                        </VerticalStackLayout>
+
+                        <VerticalStackLayout>
+                            <Label Text="Right" HorizontalOptions="Center" />
+                            <Label x:Name="BatteryRightLabel"
+                                   Text="--"
+                                   FontSize="24"
+                                   FontAttributes="Bold"
+                                   HorizontalOptions="Center" />
+                        </VerticalStackLayout>
+                    </HorizontalStackLayout>
+
+                    <Label x:Name="WearingStatus"
+                           Text="Not Wearing"
+                           HorizontalOptions="Center"
+                           Margin="0,10,0,0" />
+                </VerticalStackLayout>
+            </Frame>
+
+            <!-- Noise Control -->
+            <Frame BorderColor="LightGray" CornerRadius="10" Padding="15">
+                <VerticalStackLayout Spacing="15">
+                    <Label Text="Noise Control" FontSize="18" FontAttributes="Bold" />
+
+                    <Label x:Name="CurrentModeLabel"
+                           Text="Current Mode: --"
+                           FontSize="16"
+                           HorizontalOptions="Center" />
+
+                    <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto" ColumnSpacing="10" RowSpacing="10">
+                        <Button x:Name="OffButton"
+                                Text="Off"
+                                Clicked="OnOffClicked"
+                                Grid.Row="0" Grid.Column="0" />
+
+                        <Button x:Name="AncButton"
+                                Text="ANC"
+                                Clicked="OnAncClicked"
+                                Grid.Row="0" Grid.Column="1" />
+
+                        <Button x:Name="AmbientButton"
+                                Text="Ambient"
+                                Clicked="OnAmbientClicked"
+                                Grid.Row="1" Grid.Column="0" />
+
+                        <Button x:Name="AdaptiveButton"
+                                Text="Adaptive"
+                                Clicked="OnAdaptiveClicked"
+                                Grid.Row="1" Grid.Column="1" />
+                    </Grid>
+                </VerticalStackLayout>
+            </Frame>
+
+            <!-- Level Control -->
+            <Frame BorderColor="LightGray" CornerRadius="10" Padding="15">
+                <VerticalStackLayout Spacing="15">
+                    <Label Text="Level Control" FontSize="18" FontAttributes="Bold" />
+
+                    <Label x:Name="LevelLabel"
+                           Text="Level: --"
+                           HorizontalOptions="Center" />
+
+                    <Slider x:Name="LevelSlider"
+                            Minimum="0"
+                            Maximum="4"
+                            ValueChanged="OnLevelChanged"
+                            IsEnabled="False" />
+
+                    <Label x:Name="LevelValueLabel"
+                           Text="0"
+                           FontSize="20"
+                           FontAttributes="Bold"
+                           HorizontalOptions="Center" />
+                </VerticalStackLayout>
+            </Frame>
+
+        </VerticalStackLayout>
+    </ScrollView>
+
+</ContentPage>
