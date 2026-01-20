@@ -42,12 +42,7 @@ bool waiting_for_disconnect = false;
 unsigned long connection_attempt_time = 0;
 int connection_retry_count = 0;
 
-// 보류 중인 노이즈 컨트롤 명령
-struct PendingCommand {
-    bool has_command;
-    uint8_t data[2];
-    int len;
-};
+// 보류 중인 노이즈 컨트롤 명령 (struct는 ble_server.h에 정의됨)
 PendingCommand pending_noise_cmd = {false, {0}, 0};
 
 // ========== 패킷 파싱 ==========

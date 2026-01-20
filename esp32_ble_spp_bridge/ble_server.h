@@ -70,8 +70,12 @@ class CommandCallbacks: public BLECharacteristicCallbacks {
     }
 };
 
-// 보류 중인 노이즈 컨트롤 명령 (main .ino에서 정의)
-struct PendingCommand;
+// 보류 중인 노이즈 컨트롤 명령
+struct PendingCommand {
+    bool has_command;
+    uint8_t data[2];
+    int len;
+};
 extern PendingCommand pending_noise_cmd;
 
 class NoiseControlCallbacks: public BLECharacteristicCallbacks {

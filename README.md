@@ -6,7 +6,7 @@ An ESP32-based controller project for controlling Galaxy Buds 3 Pro from cross-p
 
 ```
 [MAUI App (iOS/Windows)]
-         ↕ BLE or WiFi
+         ↕ BLE
     [ESP32 Controller]
          ↕ Bluetooth Classic SPP
   [Galaxy Buds 3 Pro]
@@ -26,12 +26,9 @@ An ESP32-based controller project for controlling Galaxy Buds 3 Pro from cross-p
 - [x] Galaxy Buds 3 Pro 프로토콜 분석
 - [x] Windows Bluetooth 제어 PoC ([GalaxyBudsPoc/](GalaxyBudsPoc/))
 - [x] ESP32 SPP Client 기본 구조 작성
-
-### 📋 Planned
-
-- [ ] ESP32 SPP Client 완성 (레벨 조정, Extended Status)
-- [ ] ESP32 BLE Server 구현
-- [ ] MAUI 크로스 플랫폼 앱 개발 (iOS/Windows)
+- [x] ESP32 SPP Client 완성 (레벨 조정, Extended Status)
+- [x] ESP32 BLE Server 구현
+- [x] MAUI 크로스 플랫폼 앱 개발 (iOS/Windows)
 
 ## Protocol
 
